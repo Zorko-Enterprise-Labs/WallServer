@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wall Control</title>
+<style>
+  :root { --bg:#0b0f14; --panel:#121922; --line:#223041; --text:#e6edf3; --muted:#8b949e; --accent:#4cc2ff; --bad:#ff6b6b; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--text); font-family:"Segoe UI", system-ui, sans-serif; padding:16px; max-width:560px; margin:0 auto; }
+  h1 { font-size:18px; font-weight:600; margin-bottom:14px; }
+  h2 { font-size:12px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin:18px 0 8px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  button, input[type=password], select { font:inherit; color:var(--text); background:var(--panel); border:1px solid var(--line);
+    border-radius:8px; padding:9px 12px; }
+  button { cursor:pointer; }
+  button.on { border-color:var(--accent); color:var(--accent); }
+  input[type=password] { flex:1; min-width:0; }
+  .drop { border:1px dashed var(--line); border-radius:10px; padding:22px; text-align:center; color:var(--muted); cursor:pointer; }
+  .drop.over { border-color:var(--accent); color:var(--accent); }
+  .bar { height:4px; background:var(--line); border-radius:2px; overflow:hidden; margin-top:10px; }
+  .bar i { display:block; height:100%; width:0; background:var(--accent); }
+  #upmsg { font-size:13px; color:var(--muted); margin-top:6px; min-height:18px; }
+  .slots { display:grid; gap:8px; }
+  .slot { display:flex; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .slot .n { color:var(--accent); font-weight:600; width:18px; }
+  .slot .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+  .slot button { padding:5px 9px; font-size:13px; }
+  .err { color:var(--bad); }
+</style>
+</head>
+<body>
+<h1>Wall control</h1>
+
+<div class="row"><input type="password" id="token" placeholder="Token from config.json"></div>
+
+<h2>Send a file</h2>
+<div class="row" style="margin-bottom:8px">
+  <select id="slot"><option value="0">Next free slot</option><option>1</option><option>2</option><option>3</option><option>4</option></select>
+</div>
+<label class="drop" id="drop">Tap to pick a file, or drop it here<input type="file" id="file" hidden multiple></label>
+<div class="bar"><i id="upbar"></i></div>
+<div id="upmsg"></div>
+
+<h2>Layout</h2>
+<div class="row" id="layouts">
+  <button data-l="single">Single</button><button data-l="split">Split</button>
+  <button data-l="focus">Focus</button><button data-l="grid">Grid</button>
+</div>
+
+<h2>Screen</h2>
+<div class="row">
+  <button id="black">Blackout</button>
+  <button id="clear">Clear unpinned</button>
+  <button id="clearall">Clear all</button>
+</div>
+
+<h2>On the wall</h2>
+<div class="slots" id="slots"></div>
+
+<script>
+const LAYOUT_SLOTS = { single: 1, split: 2, focus: 3, grid: 4 };
+const tokenEl = document.getElementById('token');
+try { tokenEl.value = localStorage.getItem('wallToken') || ''; } catch (e) {}
+let ws = null;
+tokenEl.addEventListener('input', () => {
+  try { localStorage.setItem('wallToken', tokenEl.value); } catch (e) {}
+  if (ws) ws.close();  // reconnects with the new token
+});
+const msg = document.getElementById('upmsg');
+let current = null;
+
+async function cmd(payload) {
+  const r = await fetch('/api/command', { method: 'POST', body: JSON.stringify(payload),
+    headers: { 'Content-Type': 'application/json', 'X-Wall-Token': tokenEl.value } });
+  if (!r.ok) { msg.innerHTML = `<span class="err">${r.status === 401 ? 'Wrong token' : 'Command failed'}</span>`; }
+}
+
+function upload(files, i = 0) {
+  if (i >= files.length) return;
+  const f = files[i];
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/push');
+  xhr.setRequestHeader('X-Wall-Token', tokenEl.value);
+  xhr.setRequestHeader('X-Filename', encodeURIComponent(f.name));
+  xhr.setRequestHeader('X-From', encodeURIComponent('Control panel'));
+  xhr.setRequestHeader('X-Slot', i === 0 ? document.getElementById('slot').value : '0');
+  xhr.upload.onprogress = e => {
+    if (!e.lengthComputable) return;
+    const pct = Math.floor(e.loaded / e.total * 100);
+    document.getElementById('upbar').style.width = pct + '%';
+    msg.textContent = `Sending ${f.name}: ${pct}%`;
+  };
+  xhr.onload = () => {
+    if (xhr.status === 200) { msg.textContent = `${f.name} is on the wall`; upload(files, i + 1); }
+    else msg.innerHTML = `<span class="err">${xhr.status === 401 ? 'Wrong token' : 'Upload failed'}</span>`;
+  };
+  xhr.onerror = () => { msg.innerHTML = '<span class="err">Lost connection to the wall</span>'; };
+  xhr.send(f);
+}
+
+const drop = document.getElementById('drop');
+document.getElementById('file').addEventListener('change', e => upload([...e.target.files]));
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); upload([...e.dataTransfer.files]); });
+
+document.querySelectorAll('#layouts button').forEach(b => b.onclick = () => cmd({ action: 'layout', layout: b.dataset.l }));
+document.getElementById('black').onclick = () => cmd({ action: 'blackout' });
+document.getElementById('clear').onclick = () => cmd({ action: 'clear' });
+document.getElementById('clearall').onclick = () => cmd({ action: 'clear_all' });
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function render(st) {
+  current = st;
+  document.querySelectorAll('#layouts button').forEach(b => b.classList.toggle('on', b.dataset.l === st.layout));
+  document.getElementById('black').classList.toggle('on', st.blackout);
+  const box = document.getElementById('slots'); box.innerHTML = '';
+  for (let i = 1; i <= LAYOUT_SLOTS[st.layout]; i++) {
+    const it = st.slots[String(i)];
+    const row = document.createElement('div'); row.className = 'slot';
+    row.innerHTML = `<span class="n">${i}</span><span class="nm">${it ? esc(it.name) : '<span style="color:var(--muted)">empty</span>'}</span>`;
+    if (it) {
+      const pin = document.createElement('button');
+      pin.textContent = it.pinned ? 'Unpin' : 'Pin'; pin.className = it.pinned ? 'on' : '';
+      pin.onclick = () => cmd({ action: it.pinned ? 'unpin' : 'pin', slot: i });
+      const clr = document.createElement('button'); clr.textContent = 'Clear';
+      clr.onclick = () => cmd({ action: 'clear', slot: i });
+      row.append(pin, clr);
+    }
+    box.appendChild(row);
+  }
+}
+
+(function connect() {
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?token=${encodeURIComponent(tokenEl.value)}`);
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (m.type === 'state') render(m.state);
+    else if (m.type === 'show' && current) { current.slots[String(m.slot)] = m.item; render(current); } };
+  ws.onclose = () => setTimeout(connect, 1500);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+# kiosk browser profile made by start_wall.bat (cookies, history, cache)
+WallServer/browser-profile/
+
+# each install's own settings and token; both programs create them when needed
+WallServer/config.json
+WallClient/WallClient/config.json
+
+# files received by the wall
+WallServer/uploads/*
+
+__pycache__/
+*.pyc

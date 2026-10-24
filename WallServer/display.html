@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wall</title>
+<style>
+  :root { --bg:#05070a; --panel:#0c1117; --line:#1c2632; --text:#e6edf3; --muted:#7d8590; --accent:#4cc2ff; --bad:#ff6b6b; }
+  * { box-sizing:border-box; margin:0; }
+  html, body { height:100%; background:var(--bg); color:var(--text); overflow:hidden; cursor:none;
+               font-family:"Segoe UI", system-ui, sans-serif; }
+  #wall { position:fixed; inset:0; display:grid; gap:10px; padding:10px; }
+  #wall.single { grid-template:1fr / 1fr; }
+  #wall.split  { grid-template:1fr / 1fr 1fr; }
+  #wall.grid   { grid-template:1fr 1fr / 1fr 1fr; }
+  #wall.focus  { grid-template:1fr 1fr / 2fr 1fr; }
+  #wall.focus .slot:first-child { grid-row:1 / 3; }
+  .slot { position:relative; background:var(--panel); border:1px solid var(--line); border-radius:6px;
+          overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  .slot.hidden { display:none; }
+  .empty { color:#26313d; font-size:13px; letter-spacing:.25em; text-transform:uppercase; }
+  .content { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
+  .content.enter { animation:enter .45s cubic-bezier(.2,.8,.2,1); }
+  @keyframes enter { from { opacity:0; transform:scale(.94); } to { opacity:1; transform:none; } }
+  .content img, .content video { max-width:100%; max-height:100%; object-fit:contain; }
+  .content iframe { width:100%; height:100%; border:0; background:#fff; }
+  .content pre { align-self:stretch; width:100%; padding:28px 32px; overflow:hidden; white-space:pre-wrap;
+                 font:18px/1.5 Consolas, "Cascadia Mono", monospace; color:var(--text); }
+  .filecard { text-align:center; padding:20px; }
+  .filecard .ext { font-size:42px; font-weight:600; color:var(--accent); letter-spacing:.05em; }
+  .filecard .fname { margin-top:8px; font-size:18px; word-break:break-all; }
+  .caption { position:absolute; left:0; bottom:0; padding:5px 10px; font-size:12px; color:var(--muted);
+             background:rgba(5,7,10,.75); border-top-right-radius:6px; z-index:1; }
+  .caption .pin { color:var(--accent); margin-left:6px; }
+
+  /* small "Receiving" card with real progress */
+  .recv { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); z-index:3;
+          width:min(320px, 80%); padding:12px 14px; border-radius:8px; pointer-events:none;
+          background:rgba(12,17,23,.94); border:1px solid var(--line);
+          opacity:0; transition:opacity .2s; }
+  .recv.on { opacity:1; }
+  .recv .row { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
+  .recv .label { font-size:11px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); }
+  .recv .pct { font-size:12px; color:var(--text); font-variant-numeric:tabular-nums; }
+  .recv .name { margin:6px 0 9px; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .recv .meta { margin-top:7px; font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .bar { height:4px; background:var(--line); border-radius:2px; overflow:hidden; }
+  .bar i { display:block; height:100%; width:0; background:var(--accent); transition:width .1s linear; }
+  .bar.indet i { width:30%; animation:indet 1s linear infinite; }
+  @keyframes indet { from { transform:translateX(-100%); } to { transform:translateX(340%); } }
+  .recv.fail .label, .recv.fail .pct { color:var(--bad); }
+  .recv.fail .bar i { background:var(--bad); }
+
+  #black { position:fixed; inset:0; background:#000; opacity:0; pointer-events:none; transition:opacity .4s; z-index:10; }
+  #black.on { opacity:1; }
+  #conn { position:fixed; right:10px; bottom:10px; width:8px; height:8px; border-radius:50%;
+          background:var(--bad); opacity:0; transition:opacity .3s; z-index:11; }
+  #conn.off { opacity:.9; }
+</style>
+</head>
+<body>
+<div id="wall" class="single"></div>
+<div id="black"></div>
+<div id="conn" title="Disconnected from wall server"></div>
+
+<script>
+const LAYOUT_SLOTS = { single: 1, split: 2, focus: 3, grid: 4 };
+const MIN_RECV_MS = 450;   // keep the card up long enough to read, even on fast local transfers
+const wall = document.getElementById('wall');
+const slots = {};
+
+for (let i = 1; i <= 4; i++) {
+  const el = document.createElement('div');
+  el.className = 'slot';
+  el.innerHTML = `<div class="empty">Slot ${i}</div>
+    <div class="recv"><div class="row"><span class="label">Receiving</span><span class="pct">0%</span></div>
+    <div class="name"></div><div class="bar"><i></i></div><div class="meta"></div></div>`;
+  wall.appendChild(el);
+  slots[i] = { el, empty: el.querySelector('.empty'), recv: el.querySelector('.recv'),
+               bar: el.querySelector('.bar'), fill: el.querySelector('.bar i'),
+               pct: el.querySelector('.pct'), name: el.querySelector('.name'),
+               meta: el.querySelector('.meta'), label: el.querySelector('.label'),
+               content: null, item: null, recvId: null, recvStart: 0, hideTimer: null };
+}
+
+function fmtBytes(b) {
+  if (!b) return '0 B';
+  const u = ['B', 'KB', 'MB', 'GB']; let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return `${b.toFixed(i ? 1 : 0)} ${u[i]}`;
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function setLayout(layout) {
+  wall.className = layout;
+  for (let i = 1; i <= 4; i++) slots[i].el.classList.toggle('hidden', i > LAYOUT_SLOTS[layout]);
+}
+
+// On this machine no token is needed; a wall opened from elsewhere uses /?token=...
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+const withToken = url => TOKEN ? `${url}?token=${encodeURIComponent(TOKEN)}` : url;
+
+function renderItem(i, item, animate) {
+  const s = slots[i];
+  if (s.content) { s.content.remove(); s.content = null; }
+  s.item = item || null;
+  s.empty.style.display = item ? 'none' : '';
+  if (!item) return;
+  const c = document.createElement('div');
+  c.className = 'content' + (animate ? ' enter' : '');
+  switch (item.kind) {
+    case 'image': c.innerHTML = `<img src="${withToken(item.url)}" alt="">`; break;
+    case 'video': c.innerHTML = `<video src="${withToken(item.url)}" autoplay muted loop playsinline></video>`; break;
+    case 'pdf':   c.innerHTML = `<iframe src="${withToken(item.url)}#toolbar=0&navpanes=0"></iframe>`; break;
+    case 'text':  c.innerHTML = `<pre>${esc(item.text || '')}</pre>`; break;
+    default: {
+      const ext = (item.name.split('.').pop() || 'file').slice(0, 6).toUpperCase();
+      c.innerHTML = `<div class="filecard"><div class="ext">${esc(ext)}</div><div class="fname">${esc(item.name)}</div></div>`;
+    }
+  }
+  const cap = document.createElement('div');
+  cap.className = 'caption';
+  cap.innerHTML = `${esc(item.name)} · ${esc(item.from)}${item.pinned ? '<span class="pin">PINNED</span>' : ''}`;
+  c.appendChild(cap);
+  s.el.insertBefore(c, s.recv);
+  s.content = c;
+}
+
+function showProgress(s, received, total) {
+  if (total > 0) {
+    const pct = Math.min(100, Math.floor(received / total * 100));
+    s.bar.classList.remove('indet');
+    s.fill.style.width = pct + '%';
+    s.pct.textContent = pct + '%';
+    s.meta.textContent = `${fmtBytes(received)} / ${fmtBytes(total)}`;
+  } else {
+    s.bar.classList.add('indet');
+    s.pct.textContent = '';
+    s.meta.textContent = fmtBytes(received);
+  }
+}
+
+function onReceiving(m) {
+  const s = slots[m.slot]; if (!s) return;
+  clearTimeout(s.hideTimer);
+  s.recvId = m.id; s.recvStart = performance.now();
+  s.recv.classList.remove('fail');
+  s.label.textContent = 'Receiving';
+  s.name.textContent = `${m.name} · from ${m.from}`;
+  s.fill.style.width = '0';
+  showProgress(s, 0, m.total);
+  s.recv.classList.add('on');
+}
+
+function onProgress(m) {
+  const s = slots[m.slot];
+  if (s && s.recvId === m.id) showProgress(s, m.received, m.total);
+}
+
+function onShow(m) {
+  const s = slots[m.slot]; if (!s) return;
+  if (s.recvId !== m.id) { renderItem(m.slot, m.item, true); return; }
+  const wait = Math.max(0, MIN_RECV_MS - (performance.now() - s.recvStart)) + 150;
+  s.hideTimer = setTimeout(() => {
+    if (s.recvId !== m.id) return;
+    s.recv.classList.remove('on');
+    s.recvId = null;
+    renderItem(m.slot, m.item, true);
+  }, wait);
+}
+
+function onFailed(m) {
+  const s = slots[m.slot];
+  if (!s || s.recvId !== m.id) return;
+  s.recv.classList.add('fail');
+  s.label.textContent = 'Transfer failed';
+  s.meta.textContent = m.reason || '';
+  s.hideTimer = setTimeout(() => {
+    if (s.recvId === m.id) { s.recv.classList.remove('on'); s.recvId = null; }
+  }, 2500);
+}
+
+function onState(st) {
+  setLayout(st.layout);
+  document.getElementById('black').classList.toggle('on', !!st.blackout);
+  for (let i = 1; i <= 4; i++) {
+    const item = st.slots[String(i)] || null;
+    const cur = slots[i].item;
+    const changed = !item !== !cur || (item && (item.id !== cur.id || item.pinned !== cur.pinned));
+    if (changed) renderItem(i, item, false);
+  }
+}
+
+let retry = 500;
+function connect() {
+  const ws = new WebSocket(withToken(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`));
+  const conn = document.getElementById('conn');
+  ws.onopen = () => { retry = 500; conn.classList.remove('off'); };
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'state') onState(m.state);
+    else if (m.type === 'receiving') onReceiving(m);
+    else if (m.type === 'progress') onProgress(m);
+    else if (m.type === 'show') onShow(m);
+    else if (m.type === 'failed') onFailed(m);
+  };
+  ws.onclose = () => { conn.classList.add('off'); setTimeout(connect, retry); retry = Math.min(retry * 2, 8000); };
+}
+connect();
+</script>
+</body>
+</html>
