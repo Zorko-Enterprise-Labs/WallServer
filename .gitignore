@@ -3,7 +3,7 @@ WallServer/browser-profile/
 
 # each install's own settings and token; both programs create them when needed
 WallServer/config.json
-WallClient/WallClient/config.json
+WallClient/config.json
 
 # files received by the wall
 WallServer/uploads/*

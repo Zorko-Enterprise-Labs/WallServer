@@ -11,7 +11,7 @@ It has two parts:
 
 - **[WallServer](WallServer/)** runs on the machine connected to the TV (Windows, or a Raspberry
   Pi / Linux) and shows the wall fullscreen in a browser.
-- **[WallClient](WallClient/WallClient/)** runs on your PC. It's a drag-and-drop window, plus an
+- **[WallClient](WallClient/)** runs on your PC. It's a drag-and-drop window, plus an
   optional right-click **Send to → Wall** entry and a command-line `send.py`.
 
 Both need Python 3.10 or newer. Setup steps are in each part's README.
